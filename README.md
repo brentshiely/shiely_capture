@@ -106,3 +106,7 @@ defeating the matcher). `AGENTS.md` records those lessons.
 - A sticky footer repeats in the stitched image.
 - Live screen capture and video cannot be exercised headlessly, only the stitching is unit tested.
 - Video has no audio yet. Window audio plus narration with a mute control is planned (ScreenCaptureKit via a Swift helper).
+
+## License
+
+MIT. See `LICENSE`.
