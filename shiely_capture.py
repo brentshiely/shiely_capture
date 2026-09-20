@@ -17,6 +17,7 @@ for the Python binary that runs this script.
 
 import ctypes
 import io
+import json
 import os
 import signal
 import subprocess
@@ -36,6 +37,7 @@ from AppKit import (
     NSTrackingArea, NSTrackingInVisibleRect, NSTrackingMouseMoved, NSView,
     NSWindow, NSWorkspace,
 )
+import AppKit
 from PIL import Image
 from Quartz import (
     CGShieldingWindowLevel, CGWindowListCopyWindowInfo, kCGNullWindowID,
@@ -47,6 +49,10 @@ KEY_RETURN, KEY_ENTER, KEY_ESC = 36, 76, 53
 MOD_SHIFT, MOD_CONTROL = 512, 4096
 
 VIDEO_DIR = os.path.expanduser("~/Movies/ShielyCapture")
+STATE_DIR = os.path.expanduser("~/Library/Application Support/ShielyCapture")
+REGION_FILE = os.path.join(STATE_DIR, "last_region.json")
+MIN_FRAME = 20
+EVEN_ODD = getattr(AppKit, "NSWindingRuleEvenOdd", 1)
 POLL_SECONDS = 0.10
 MAX_CANVAS_ROWS = 60000
 MIN_MATCH_ROWS = 30
@@ -159,6 +165,18 @@ def _screencapture(*args, timeout=120):
 
 
 # ----------------------------------------------------------- region selector
+
+def _draw_banner(bounds, hint):
+    attrs = {NSFontAttributeName: NSFont.boldSystemFontOfSize_(18),
+             NSForegroundColorAttributeName: NSColor.whiteColor()}
+    s = NSString.stringWithString_(hint)
+    sz = s.sizeWithAttributes_(attrs)
+    w, h = sz.width + 48, sz.height + 24
+    x, y = (bounds.size.width - w) / 2, bounds.size.height - h - 90
+    NSColor.colorWithCalibratedWhite_alpha_(0.05, 0.85).set()
+    NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(((x, y), (w, h)), 12, 12).fill()
+    s.drawAtPoint_withAttributes_((x + 24, y + 12), attrs)
+
 
 def _window_under(gx, gy):
     """Frontmost normal window containing the global top-left point.
@@ -279,16 +297,7 @@ class _SelView(NSView):
         self._draw_banner()
 
     def _draw_banner(self):
-        attrs = {NSFontAttributeName: NSFont.boldSystemFontOfSize_(18),
-                 NSForegroundColorAttributeName: NSColor.whiteColor()}
-        s = NSString.stringWithString_(self.hint)
-        sz = s.sizeWithAttributes_(attrs)
-        b = self.bounds()
-        w, h = sz.width + 48, sz.height + 24
-        x, y = (b.size.width - w) / 2, b.size.height - h - 90
-        NSColor.colorWithCalibratedWhite_alpha_(0.05, 0.85).set()
-        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(((x, y), (w, h)), 12, 12).fill()
-        s.drawAtPoint_withAttributes_((x + 24, y + 12), attrs)
+        _draw_banner(self.bounds(), self.hint)
 
 
 class _BorderView(NSView):
@@ -361,6 +370,258 @@ class Selector:
             rect = (int(round(x)), int(round(_primary_height() - (y + h))),
                     int(round(w)), int(round(h)))
         self.done(rect)
+
+
+# ------------------------------------------------- region frame (remembered)
+
+def hit_test(r, p, tol=10):
+    """Which part of frame r (x, y, w, h; bottom-left origin) is under point p.
+    Returns 'n','s','e','w','ne','nw','se','sw', 'move', or None when outside."""
+    x, y, w, h = r
+    px, py = p
+    l, rr, b, t = x, x + w, y, y + h
+    if not (l - tol <= px <= rr + tol and b - tol <= py <= t + tol):
+        return None
+    north, south = abs(py - t) <= tol, abs(py - b) <= tol
+    west, east = abs(px - l) <= tol, abs(px - rr) <= tol
+    name = ("n" if north else "s" if south else "") + ("w" if west else "e" if east else "")
+    return name or "move"
+
+
+def apply_drag(mode, r0, p0, p):
+    """Frame after dragging from p0 to p. mode is a hit_test result or 'new'."""
+    x, y, w, h = r0
+    dx, dy = p[0] - p0[0], p[1] - p0[1]
+    if mode == "move":
+        return (x + dx, y + dy, w, h)
+    if mode == "new":
+        l, rr = sorted((p0[0], p[0]))
+        b, t = sorted((p0[1], p[1]))
+        return (l, b, rr - l, t - b)
+    l, rr, b, t = x, x + w, y, y + h
+    if "w" in mode:
+        l += dx
+    if "e" in mode:
+        rr += dx
+    if "s" in mode:
+        b += dy
+    if "n" in mode:
+        t += dy
+    l, rr = min(l, rr), max(l, rr)      # dragging past the opposite edge flips the frame
+    b, t = min(b, t), max(b, t)
+    return (l, b, rr - l, t - b)
+
+
+def rect_on_screens(rect_tl, frames_cocoa, primary_h):
+    """True if the centre of a top-left rect lies on one of the screen frames."""
+    x, y, w, h = rect_tl
+    cx, cy = x + w / 2, primary_h - (y + h / 2)
+    return any(fx <= cx <= fx + fw and fy <= cy <= fy + fh for fx, fy, fw, fh in frames_cocoa)
+
+
+def save_region(rect_tl, path=REGION_FILE):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump(list(rect_tl), fh)
+    except Exception:
+        traceback.print_exc()
+
+
+def load_region(path=REGION_FILE, frames_cocoa=None, primary_h=None):
+    """Last captured region as a top-left (x, y, w, h), or None if missing or off-screen."""
+    try:
+        with open(path) as fh:
+            x, y, w, h = [int(v) for v in json.load(fh)]
+    except Exception:
+        return None
+    if w < MIN_FRAME or h < MIN_FRAME:
+        return None
+    if frames_cocoa is None:
+        frames_cocoa = [(f.origin.x, f.origin.y, f.size.width, f.size.height)
+                        for f in (sc.frame() for sc in NSScreen.screens())]
+        primary_h = _primary_height()
+    return (x, y, w, h) if rect_on_screens((x, y, w, h), frames_cocoa, primary_h) else None
+
+
+_HANDLE = 5
+_CURSORS = {"n": "resizeUpDownCursor", "s": "resizeUpDownCursor",
+            "e": "resizeLeftRightCursor", "w": "resizeLeftRightCursor",
+            "move": "openHandCursor"}
+
+
+def _global_point(view, ev):
+    pt = view.window().convertPointToScreen_(ev.locationInWindow())
+    return (pt.x, pt.y)
+
+
+class _FrameView(NSView):
+    def initWithFrame_(self, frame):
+        self = objc.super(_FrameView, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self.editor = None
+        return self
+
+    def acceptsFirstResponder(self):
+        return True
+
+    def acceptsFirstMouse_(self, ev):
+        return True
+
+    def updateTrackingAreas(self):
+        objc.super(_FrameView, self).updateTrackingAreas()
+        for t in list(self.trackingAreas()):
+            self.removeTrackingArea_(t)
+        opts = NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        self.addTrackingArea_(NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            self.bounds(), opts, self, None))
+
+    def mouseMoved_(self, ev):
+        self.editor.hover(_global_point(self, ev))
+
+    def mouseDown_(self, ev):
+        self.editor.begin_drag(_global_point(self, ev))
+
+    def mouseDragged_(self, ev):
+        self.editor.drag(_global_point(self, ev))
+
+    def mouseUp_(self, ev):
+        self.editor.end_drag(_global_point(self, ev))
+
+    def keyDown_(self, ev):
+        self.editor.key(ev.keyCode(), ev.modifierFlags())
+
+    def drawRect_(self, rect):
+        self.editor.draw_in(self)
+
+
+class FrameEditor:
+    """Full-screen overlay with an adjustable frame that starts at the last region."""
+
+    def __init__(self, rect_tl, done):
+        self.done = done
+        self.wins = []
+        self.views = []
+        ph = _primary_height()
+        self.rect = (rect_tl[0], ph - (rect_tl[1] + rect_tl[3]), rect_tl[2], rect_tl[3]) if rect_tl else None
+        self.mode = self.p0 = self.r0 = self.prev_rect = None
+        self.hint = ("Adjust the frame, then press Return to capture.   Esc cancels." if rect_tl
+                     else "Drag to draw a region, then press Return to capture.   Esc cancels.")
+        self.prev_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+
+    def show(self):
+        level = CGShieldingWindowLevel()
+        for scr in NSScreen.screens():
+            w, v = _make_window(scr.frame(), _FrameView, level, False)
+            v.editor = self
+            w.setAcceptsMouseMovedEvents_(True)
+            self.wins.append(w)
+            self.views.append(v)
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        for w, v in zip(self.wins, self.views):
+            w.makeKeyAndOrderFront_(None)
+            w.makeFirstResponder_(v)
+
+    def refresh(self):
+        for v in self.views:
+            v.setNeedsDisplay_(True)
+
+    # -- mouse
+    def hover(self, p):
+        hit = hit_test(self.rect, p) if self.rect else None
+        name = _CURSORS.get(hit)
+        (getattr(NSCursor, name)() if name else NSCursor.crosshairCursor()).set()
+
+    def begin_drag(self, p):
+        self.p0 = p
+        self.r0 = self.rect or (p[0], p[1], 0, 0)
+        hit = hit_test(self.rect, p) if self.rect else None
+        self.mode = hit or "new"
+        if self.mode == "new":
+            self.prev_rect = self.rect
+            self.rect = (p[0], p[1], 0, 0)
+            self.refresh()
+
+    def drag(self, p):
+        if self.mode:
+            self.rect = apply_drag(self.mode, self.r0, self.p0, p)
+            self.refresh()
+
+    def end_drag(self, p):
+        if self.mode == "new" and self.rect[2] < MIN_FRAME or self.mode == "new" and self.rect[3] < MIN_FRAME:
+            self.rect = self.prev_rect           # a plain click outside must not lose the frame
+        self.mode = None
+        self.refresh()
+
+    # -- keys
+    def key(self, code, flags):
+        step = 10 if flags & (1 << 17) else 1
+        nudge = {123: (-step, 0), 124: (step, 0), 125: (0, -step), 126: (0, step)}.get(code)
+        if code in (KEY_RETURN, KEY_ENTER):
+            self.confirm()
+        elif code == KEY_ESC:
+            self.finish(None)
+        elif nudge and self.rect:
+            x, y, w, h = self.rect
+            self.rect = (x + nudge[0], y + nudge[1], w, h)
+            self.refresh()
+
+    def confirm(self):
+        if self.rect and self.rect[2] >= MIN_FRAME and self.rect[3] >= MIN_FRAME:
+            self.finish(self.rect)
+
+    def finish(self, rect_cocoa):
+        for w in self.wins:
+            w.orderOut_(None)
+        self.wins = []
+        self.views = []
+        try:
+            if self.prev_app:
+                self.prev_app.activateWithOptions_(2)
+        except Exception:
+            pass
+        if rect_cocoa:
+            x, y, w, h = rect_cocoa
+            rect_cocoa = (int(round(x)), int(round(_primary_height() - (y + h))),
+                          int(round(w)), int(round(h)))
+        self.done(rect_cocoa)
+
+    # -- drawing
+    def draw_in(self, view):
+        b = view.bounds()
+        path = NSBezierPath.bezierPath()
+        path.appendBezierPathWithRect_(b)
+        if self.rect:
+            o = view.window().frame().origin
+            x, y, w, h = self.rect[0] - o.x, self.rect[1] - o.y, self.rect[2], self.rect[3]
+            path.appendBezierPathWithRect_(((x, y), (w, h)))
+            path.setWindingRule_(EVEN_ODD)
+        NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.30).set()
+        path.fill()
+        if self.rect:
+            red = NSColor.colorWithCalibratedRed_green_blue_alpha_(1, 0.2, 0.2, 1)
+            red.set()
+            frame = NSBezierPath.bezierPathWithRect_(((x, y), (w, h)))
+            frame.setLineWidth_(2)
+            frame.stroke()
+            for hx, hy in ((x, y), (x + w / 2, y), (x + w, y), (x, y + h / 2),
+                           (x + w, y + h / 2), (x, y + h), (x + w / 2, y + h), (x + w, y + h)):
+                sq = ((hx - _HANDLE, hy - _HANDLE), (2 * _HANDLE, 2 * _HANDLE))
+                NSColor.whiteColor().set()
+                NSBezierPath.fillRect_(sq)
+                red.set()
+                NSBezierPath.bezierPathWithRect_(sq).stroke()
+            label = NSString.stringWithString_(f"{int(w)} x {int(h)}")
+            attrs = {NSFontAttributeName: NSFont.boldSystemFontOfSize_(13),
+                     NSForegroundColorAttributeName: NSColor.whiteColor()}
+            sz = label.sizeWithAttributes_(attrs)
+            ly = y + h + 8 if y + h + 8 + sz.height + 8 < b.size.height else y + h - sz.height - 16
+            NSColor.colorWithCalibratedWhite_alpha_(0.05, 0.85).set()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                ((x, ly - 3), (sz.width + 14, sz.height + 6)), 6, 6).fill()
+            label.drawAtPoint_withAttributes_((x + 7, ly), attrs)
+        _draw_banner(b, self.hint)
 
 
 # --------------------------------------------------------------- stitching
@@ -719,7 +980,30 @@ class App(rumps.App):
         threading.Thread(target=work, daemon=True).start()
 
     def region(self):
-        self._oneshot("-i")
+        if self.session or self.busy or self.selector:
+            return
+        self.selector = FrameEditor(load_region(), self._region_done)
+        self.selector.show()
+
+    def _region_done(self, rect):
+        self.selector = None
+        if not rect:
+            play("Basso")
+            return
+        save_region(rect)
+        self.busy = True
+        log("region", rect)
+
+        def work():
+            try:
+                time.sleep(0.2)                    # let the overlay finish disappearing
+                x, y, w, h = rect
+                _screencapture("-x", "-R", f"{x},{y},{w},{h}")
+                self.flash_until = time.time() + 2.5
+                play("Pop")
+            finally:
+                self.busy = False
+        threading.Thread(target=work, daemon=True).start()
 
     def fullscreen(self):
         self._oneshot()

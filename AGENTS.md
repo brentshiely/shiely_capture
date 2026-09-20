@@ -9,6 +9,7 @@ ShielyCapture is a single-file macOS menu bar app (`shiely_capture.py`, Python +
 Global hotkeys take screenshots to the clipboard. Ctrl+Shift+4 is a Snagit-style scrolling
 capture: the user selects a window or area, scrolls normally, and Return stitches the frames.
 Ctrl+Shift+5 records silent video of a window or area with `screencapture -v -R`.
+Ctrl+Shift+1 opens a remembered, adjustable frame (`FrameEditor`); Return captures it with `screencapture -R`.
 
 ## Layout
 
@@ -16,6 +17,8 @@ Ctrl+Shift+5 records silent video of a window or area with `screencapture -v -R`
   stitching (`find_shift`, `Stitcher`), `ScrollSession` thread, `App` (rumps).
 - `tests/test_stitch.py`: pixel-exact stitcher tests on a synthetic tall page. Run these after any
   change to matching or stitching: `./venv/bin/python tests/test_stitch.py`
+- `tests/test_frame.py`: hit testing, drag math and persistence for the remembered region frame.
+  The geometry lives in pure functions (`hit_test`, `apply_drag`) so it can be tested without a screen.
 - `setup.sh`: builds `venv/` and `ShielyCapture.app` (a renamed, ad-hoc-signed copy of Homebrew's
   Python.app, so macOS permission prompts say "ShielyCapture" instead of "Python").
 - `start.sh`, `stop.sh`, `install_login_agent.sh`, `uninstall_login_agent.sh`: run and manage it.
@@ -34,6 +37,10 @@ Ctrl+Shift+5 records silent video of a window or area with `screencapture -v -R`
 - **You cannot test live capture headlessly.** `screencapture` fails ("could not create image")
   in sandboxed shells without Screen Recording. Only the stitcher is unit-testable. Say so
   plainly if you cannot verify a capture-path change, and ask the user to try it.
+- **PyObjC treats underscore-prefixed method names as selectors.** A helper like `def _gp(self, ev)` inside an
+  `NSView` subclass raises `BadPrototypeError` at import. Keep helpers as module-level functions.
+- **Global hotkeys take those keys from every app.** While ShielyCapture runs, Ctrl+Shift+1..5 cannot be typed
+  into, for example, System Settings' shortcut recorder. Quit it from the menu bar to test that.
 - **Sudo, permissions and system settings are the user's.** Do not attempt to change privacy
   settings or accept licenses on their behalf.
 

@@ -24,11 +24,19 @@ cannot be tested, the stitching invariants).
 
 | Hotkey | Action |
 | --- | --- |
-| Ctrl+Shift+1 | Region |
+| Ctrl+Shift+1 | Region (reopens your last frame) |
 | Ctrl+Shift+2 | Full screen |
 | Ctrl+Shift+3 | Window |
 | Ctrl+Shift+4 | Scroll capture |
 | Ctrl+Shift+5 | Silent video of a window or area |
+
+## Region capture
+
+Press Ctrl+Shift+1 and a frame appears where you last captured, at the same size. Drag its
+sides or corners to resize, drag inside to move it, or use the arrow keys to nudge it (hold
+Shift for 10 points at a time). Drag outside the frame to draw a new one. Press Return to
+capture, Esc to cancel. The frame is remembered between captures and restarts, so repeated
+captures of the same area need no redrawing.
 
 ## Scroll capture
 
@@ -84,7 +92,8 @@ Log: `~/Library/Logs/shiely_capture.log`
 ## Tests
 
 ```bash
-./venv/bin/python tests/test_stitch.py
+./venv/bin/python tests/test_stitch.py   # scrolling stitcher
+./venv/bin/python tests/test_frame.py    # region frame geometry and persistence
 ```
 
 Scrolls a synthetic tall page past the stitcher at several speeds, with a sticky
