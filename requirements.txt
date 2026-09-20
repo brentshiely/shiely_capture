@@ -1,0 +1,5 @@
+rumps
+pillow
+numpy
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz
