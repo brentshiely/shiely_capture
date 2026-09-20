@@ -28,6 +28,7 @@ cannot be tested, the stitching invariants).
 | Ctrl+Shift+2 | Full screen |
 | Ctrl+Shift+3 | Window |
 | Ctrl+Shift+4 | Scroll capture |
+| Ctrl+Shift+5 | Silent video of a window or area |
 
 ## Scroll capture
 
@@ -39,6 +40,14 @@ cannot be tested, the stitching invariants).
 Sounds: Tink when recording starts, Pop when copied, Basso on cancel, Funk if you
 scrolled too fast to track (scroll back up a little and it recovers). The menu
 bar shows a recording dot with a frame count, then a check mark after a copy.
+
+## Video capture
+
+Press Ctrl+Shift+5, click a window or drag an area, and it records the screen with no audio.
+Press Ctrl+Shift+5 again or Return to stop, or Esc to discard. The `.mov` is saved to
+`~/Movies/ShielyCapture/` and the file is also placed on the clipboard, so you can paste it
+into Slack, Mail or Messages. It records that rectangle of the screen, so a window that
+covers the target would appear in the video.
 
 ## Setup
 
@@ -70,6 +79,7 @@ Log: `~/Library/Logs/shiely_capture.log`
   only from above each frame's bottom margin, so window corners and Chrome's link
   bubble never land mid-page.
 - **Stitching** is incremental and supports scrolling up and down.
+- **Video** shells out to `screencapture -v -R` and stops it with SIGINT so the file is finalized.
 
 ## Tests
 
@@ -94,4 +104,5 @@ defeating the matcher). `AGENTS.md` records those lessons.
 
 - Very fast flicks (roughly 4000 px/s or more) lose tracking. Nothing is corrupted.
 - A sticky footer repeats in the stitched image.
-- Live screen capture cannot be exercised headlessly, only the stitching is unit tested.
+- Live screen capture and video cannot be exercised headlessly, only the stitching is unit tested.
+- Video has no audio yet. Window audio plus narration with a mute control is planned (ScreenCaptureKit via a Swift helper).

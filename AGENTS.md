@@ -8,6 +8,7 @@ Read this first if you are an AI engineer asked to review, run, debug or extend 
 ShielyCapture is a single-file macOS menu bar app (`shiely_capture.py`, Python + PyObjC + rumps).
 Global hotkeys take screenshots to the clipboard. Ctrl+Shift+4 is a Snagit-style scrolling
 capture: the user selects a window or area, scrolls normally, and Return stitches the frames.
+Ctrl+Shift+5 records silent video of a window or area with `screencapture -v -R`.
 
 ## Layout
 
@@ -46,6 +47,16 @@ capture: the user selects a window or area, scrolls normally, and Return stitche
   status bubble live at the bottom edge and otherwise land mid-page.
 - A failed match leaves the previous frame in place, so scrolling back recovers. A wrong
   match corrupts the output, so prefer "no match" over a weak match (`MIN_MATCH_ROWS`, fraction >= 0.6).
+
+## Planned: video with audio and narration
+
+Requested behavior: record a window's app audio plus microphone narration, with an on-screen
+control panel (not captured) that mutes or unmutes narration, plus a hotkey (Ctrl+Shift+M).
+`screencapture` cannot do this (no app audio, no live mute). The plan is a Swift helper using
+ScreenCaptureKit (macOS 15+ for microphone capture), driven by the Python app, mixing both audio
+sources into one track, and writing silence while muted so audio stays in sync. The helper needs
+NSMicrophoneUsageDescription in the app's Info.plist. Re-signing with the ad-hoc identity resets
+the user's Screen Recording grant, so set up a stable local signing certificate first.
 
 ## Known limits and reasonable next steps
 

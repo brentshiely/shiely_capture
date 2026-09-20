@@ -18,6 +18,7 @@ for the Python binary that runs this script.
 import ctypes
 import io
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,7 @@ import objc
 import rumps
 from AppKit import (
     NSApplication, NSBackingStoreBuffered, NSBezierPath, NSColor, NSCursor,
-    NSEvent, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSEvent, NSFont, NSURL, NSFontAttributeName, NSForegroundColorAttributeName,
     NSPasteboard, NSPasteboardTypePNG, NSScreen, NSSound, NSString, NSTrackingActiveAlways,
     NSTrackingArea, NSTrackingInVisibleRect, NSTrackingMouseMoved, NSView,
     NSWindow, NSWorkspace,
@@ -41,10 +42,11 @@ from Quartz import (
     kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
 )
 
-KEY_1, KEY_2, KEY_3, KEY_4 = 18, 19, 20, 21
+KEY_1, KEY_2, KEY_3, KEY_4, KEY_5 = 18, 19, 20, 21, 23
 KEY_RETURN, KEY_ENTER, KEY_ESC = 36, 76, 53
 MOD_SHIFT, MOD_CONTROL = 512, 4096
 
+VIDEO_DIR = os.path.expanduser("~/Movies/ShielyCapture")
 POLL_SECONDS = 0.10
 MAX_CANVAS_ROWS = 60000
 MIN_MATCH_ROWS = 30
@@ -178,7 +180,7 @@ def _window_under(gx, gy):
 
 
 class _SelView(NSView):
-    HINT = "Click a window, or drag an area, then scroll.   Esc cancels."
+    hint = "Click a window, or drag an area, then scroll.   Esc cancels."
 
     def initWithFrame_(self, frame):
         self = objc.super(_SelView, self).initWithFrame_(frame)
@@ -279,7 +281,7 @@ class _SelView(NSView):
     def _draw_banner(self):
         attrs = {NSFontAttributeName: NSFont.boldSystemFontOfSize_(18),
                  NSForegroundColorAttributeName: NSColor.whiteColor()}
-        s = NSString.stringWithString_(self.HINT)
+        s = NSString.stringWithString_(self.hint)
         sz = s.sizeWithAttributes_(attrs)
         b = self.bounds()
         w, h = sz.width + 48, sz.height + 24
@@ -325,8 +327,9 @@ def _primary_height():
 class Selector:
     """Full-screen drag-to-select overlay. Calls done(rect_top_left | None)."""
 
-    def __init__(self, done):
+    def __init__(self, done, hint=None):
         self.done = done
+        self.hint = hint
         self.wins = []
         self.prev_app = NSWorkspace.sharedWorkspace().frontmostApplication()
 
@@ -335,6 +338,8 @@ class Selector:
         for scr in NSScreen.screens():
             w, v = _make_window(scr.frame(), _SelView, level, False)
             v.finish = self._finish
+            if self.hint:
+                v.hint = self.hint
             w.setAcceptsMouseMovedEvents_(True)
             self.wins.append((w, v))
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
@@ -518,6 +523,9 @@ class ScrollSession(threading.Thread):
     def frames(self):
         return self.stitcher.frames_used
 
+    def title(self):
+        return f"⏺ {self.frames}"
+
     def _grab(self):
         x, y, w, h = self.rect
         path = os.path.join(self.tmpdir, "f.png")
@@ -578,9 +586,67 @@ class ScrollSession(threading.Thread):
             self.on_done(img)
 
 
+# ---------------------------------------------------------- video session
+
+class VideoSession(threading.Thread):
+    """Silent screen video of a rectangle, using the built-in screencapture -v.
+    Stops when stop_flag is set (SIGINT makes screencapture finalize the file)."""
+
+    def __init__(self, rect, on_done):
+        super().__init__(daemon=True)
+        self.rect = rect
+        self.on_done = on_done
+        self.stop_flag = threading.Event()
+        self.cancelled = False
+        self.started = time.time()
+        os.makedirs(VIDEO_DIR, exist_ok=True)
+        self.path = os.path.join(
+            VIDEO_DIR, time.strftime("ShielyCapture %Y-%m-%d at %H.%M.%S") + ".mov")
+        self.proc = None
+
+    def title(self):
+        t = int(time.time() - self.started)
+        return f"⏺ {t // 60}:{t % 60:02d}"
+
+    def run(self):
+        x, y, w, h = self.rect
+        path = None
+        try:
+            self.proc = subprocess.Popen(
+                ["screencapture", "-v", "-x", "-R", f"{x},{y},{w},{h}", self.path],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            while not self.stop_flag.is_set():
+                if self.proc.poll() is not None:      # died on its own: permission, bad flags
+                    self.cancelled = True
+                    break
+                time.sleep(0.1)
+            if self.proc.poll() is None:
+                self.proc.send_signal(signal.SIGINT)
+            try:
+                _, err = self.proc.communicate(timeout=20)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                _, err = self.proc.communicate()
+                self.cancelled = True
+            if err and err.strip():
+                log("screencapture:", err.decode(errors="replace").strip())
+            ok = os.path.exists(self.path) and os.path.getsize(self.path) > 0
+            if self.cancelled or not ok:
+                if os.path.exists(self.path):
+                    os.unlink(self.path)
+                if not self.cancelled and not ok:
+                    log("video capture produced no file")
+            else:
+                path = self.path
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self.on_done(path)
+
+
 # ---------------------------------------------------------------- the app
 
-HK_REGION, HK_FULL, HK_WINDOW, HK_SCROLL, HK_RET, HK_ESC, HK_ENTER = 1, 2, 3, 4, 10, 11, 12
+HK_REGION, HK_FULL, HK_WINDOW, HK_SCROLL, HK_VIDEO, HK_RET, HK_ESC, HK_ENTER = 1, 2, 3, 4, 5, 10, 11, 12
 
 
 class App(rumps.App):
@@ -591,6 +657,7 @@ class App(rumps.App):
             rumps.MenuItem("Full screen  ⌃⇧2", callback=lambda _: self.fullscreen()),
             rumps.MenuItem("Window  ⌃⇧3", callback=lambda _: self.window()),
             rumps.MenuItem("Scroll  ⌃⇧4", callback=lambda _: self.scroll()),
+            rumps.MenuItem("Video  ⌃⇧5", callback=lambda _: self.video()),
             None,
             rumps.MenuItem("Quit", callback=rumps.quit_application),
         ]
@@ -600,7 +667,8 @@ class App(rumps.App):
         self.border = None
         self.flash_until = 0
         self.hotkeys = Hotkeys(self.on_hotkey)
-        for hid, key in ((HK_REGION, KEY_1), (HK_FULL, KEY_2), (HK_WINDOW, KEY_3), (HK_SCROLL, KEY_4)):
+        for hid, key in ((HK_REGION, KEY_1), (HK_FULL, KEY_2), (HK_WINDOW, KEY_3), (HK_SCROLL, KEY_4),
+                          (HK_VIDEO, KEY_5)):
             self.hotkeys.register(hid, key, MOD_CONTROL | MOD_SHIFT)
         self.ticker = rumps.Timer(self._tick, 0.4)
         self.ticker.start()
@@ -611,7 +679,7 @@ class App(rumps.App):
         if self.session and not self.session.is_alive():
             self._cleanup_session()
         if self.session:
-            self.title = f"⏺ {self.session.frames}"
+            self.title = self.session.title()
         elif time.time() < self.flash_until:
             self.title = "✓"
         elif self.selector:
@@ -630,6 +698,8 @@ class App(rumps.App):
             self.window()
         elif hid == HK_SCROLL:
             self.scroll()
+        elif hid == HK_VIDEO:
+            self.video()
         elif hid in (HK_RET, HK_ENTER):
             self.finish_scroll(cancel=False)
         elif hid == HK_ESC:
@@ -659,15 +729,23 @@ class App(rumps.App):
 
     # -- scroll capture
     def scroll(self):
+        self._begin("scroll")
+
+    def video(self):
+        self._begin("video")
+
+    def _begin(self, mode):
         if self.session:
             self.finish_scroll(cancel=False)
             return
         if self.busy or self.selector:
             return
-        self.selector = Selector(self._region_chosen)
+        hint = ("Click a window, or drag an area, to record video.   Esc cancels."
+                if mode == "video" else None)
+        self.selector = Selector(lambda rect: self._region_chosen(rect, mode), hint)
         self.selector.show()
 
-    def _region_chosen(self, rect):
+    def _region_chosen(self, rect, mode):
         self.selector = None
         if not rect:
             play("Basso")
@@ -681,12 +759,15 @@ class App(rumps.App):
         win.orderFrontRegardless()
         self.border = win
         self.busy = True
-        self.session = ScrollSession(rect, self._session_done)
+        if mode == "video":
+            self.session = VideoSession(rect, self._video_done)
+        else:
+            self.session = ScrollSession(rect, self._session_done)
         self.hotkeys.register(HK_RET, KEY_RETURN, 0)
         self.hotkeys.register(HK_ENTER, KEY_ENTER, 0)
         self.hotkeys.register(HK_ESC, KEY_ESC, 0)
         play("Tink")
-        log("scroll capture started", rect)
+        log(f"{mode} capture started", rect)
         self.session.start()
 
     def finish_scroll(self, cancel):
@@ -708,6 +789,23 @@ class App(rumps.App):
         self._end_ui()
         self.session = None
         self.busy = False
+
+    def _video_done(self, path):
+        # runs on the session thread
+        if not path:
+            log("video capture cancelled or failed")
+            play("Basso")
+            return
+        try:
+            pb = NSPasteboard.generalPasteboard()
+            pb.clearContents()
+            pb.writeObjects_([NSURL.fileURLWithPath_(path)])
+            log(f"video saved {path} ({os.path.getsize(path) // 1024} KB)")
+            self.flash_until = time.time() + 2.5
+            play("Pop")
+        except Exception:
+            traceback.print_exc()
+            play("Basso")
 
     def _session_done(self, img):
         # runs on the session thread
