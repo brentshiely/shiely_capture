@@ -3,6 +3,25 @@
 A small Mac menu bar screenshot tool with Snagit-style scrolling capture.
 Everything goes to the clipboard as a PNG.
 
+Built by pairing with an AI engineer (Claude Code) and tested by hand on real pages.
+Status: works on macOS 26 on Apple Silicon. Other setups are untested.
+This is source code, not a download: there is no installer yet (see "Who this is for").
+
+## Who this is for
+
+**If you are comfortable with code**, clone it and run the setup below.
+
+**If you use an AI as your engineer**, point it at this repo and let it do the setup and review.
+Paste this into your assistant:
+
+> Clone https://github.com/brentshiely/shiely_capture and read `AGENTS.md` and `README.md`.
+> Review the code for bugs and security problems and tell me what you find. Then set it up on
+> my Mac using `setup.sh`, walk me through the Screen Recording permission, and confirm each
+> of the four hotkeys works with me.
+
+`AGENTS.md` holds the non-obvious details an engineer needs (permission quirks, what can and
+cannot be tested, the stitching invariants).
+
 | Hotkey | Action |
 | --- | --- |
 | Ctrl+Shift+1 | Region |
@@ -23,10 +42,12 @@ bar shows a recording dot with a frame count, then a check mark after a copy.
 
 ## Setup
 
-Requires Homebrew Python (`brew install python`). It deliberately does not use
-`/usr/bin/python3`, which is the Xcode shim and fails until the Xcode license is accepted.
+Requires macOS on Apple Silicon and Homebrew Python (`brew install python`). It deliberately
+does not use `/usr/bin/python3`, which is the Xcode shim and fails until the Xcode license is accepted.
 
 ```bash
+git clone https://github.com/brentshiely/shiely_capture.git
+cd shiely_capture
 ./setup.sh                 # venv + signed ShielyCapture.app wrapper
 ./start.sh                 # run it now
 ./install_login_agent.sh   # run at every login (uninstall_login_agent.sh removes it)
@@ -58,6 +79,16 @@ Log: `~/Library/Logs/shiely_capture.log`
 
 Scrolls a synthetic tall page past the stitcher at several speeds, with a sticky
 header and bottom-edge artifacts, and checks the result pixel for pixel.
+
+## How it was built
+
+It started as a script whose hotkeys did nothing and whose LaunchAgent never ran. Two root
+causes: it launched through the Xcode-shim Python, and it listened for keys with `NSEvent`
+monitors that fail silently without Input Monitoring. Fixes were Carbon hotkeys and a dedicated
+venv. The scrolling capture was then rebuilt around a stitcher developed against synthetic
+scrolling pages, with hand testing on real pages finding what the tests missed (an overlay
+that gave no instructions, window corners and link bubbles at the seams, sticky headers
+defeating the matcher). `AGENTS.md` records those lessons.
 
 ## Known limits
 
