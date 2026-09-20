@@ -47,6 +47,7 @@ from Quartz import (
 KEY_1, KEY_2, KEY_3, KEY_4, KEY_5 = 18, 19, 20, 21, 23
 KEY_RETURN, KEY_ENTER, KEY_ESC = 36, 76, 53
 MOD_SHIFT, MOD_CONTROL = 512, 4096
+MOD_MENU_CTRL_SHIFT = (1 << 18) | (1 << 17)      # NSEventModifierFlagControl | NSEventModifierFlagShift
 
 VIDEO_DIR = os.path.expanduser("~/Movies/ShielyCapture")
 STATE_DIR = os.path.expanduser("~/Library/Application Support/ShielyCapture")
@@ -910,15 +911,23 @@ class VideoSession(threading.Thread):
 HK_REGION, HK_FULL, HK_WINDOW, HK_SCROLL, HK_VIDEO, HK_RET, HK_ESC, HK_ENTER = 1, 2, 3, 4, 5, 10, 11, 12
 
 
+def _menu_item(title, key, callback):
+    """Menu row with the shortcut shown as a real key equivalent, so macOS draws
+    the name left-aligned and the shortcut right-aligned like any native menu."""
+    item = rumps.MenuItem(title, callback=callback, key=key)
+    item._menuitem.setKeyEquivalentModifierMask_(MOD_MENU_CTRL_SHIFT)
+    return item
+
+
 class App(rumps.App):
     def __init__(self):
         super().__init__("⌗", quit_button=None)
         self.menu = [
-            rumps.MenuItem("Region  ⌃⇧1", callback=lambda _: self.region()),
-            rumps.MenuItem("Full screen  ⌃⇧2", callback=lambda _: self.fullscreen()),
-            rumps.MenuItem("Window  ⌃⇧3", callback=lambda _: self.window()),
-            rumps.MenuItem("Scroll  ⌃⇧4", callback=lambda _: self.scroll()),
-            rumps.MenuItem("Video  ⌃⇧5", callback=lambda _: self.video()),
+            _menu_item("Region", "1", lambda _: self.region()),
+            _menu_item("Full screen", "2", lambda _: self.fullscreen()),
+            _menu_item("Window", "3", lambda _: self.window()),
+            _menu_item("Scroll", "4", lambda _: self.scroll()),
+            _menu_item("Video", "5", lambda _: self.video()),
             None,
             rumps.MenuItem("Quit", callback=rumps.quit_application),
         ]
