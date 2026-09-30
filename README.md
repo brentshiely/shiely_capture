@@ -49,6 +49,16 @@ Sounds: Tink when recording starts, Pop when copied, Basso on cancel, Funk if yo
 scrolled too fast to track (scroll back up a little and it recovers). The menu
 bar shows a recording dot with a frame count, then a check mark after a copy.
 
+### Tiles for Claude
+
+Very tall stitched images get downscaled until text is unreadable when uploaded to
+Claude. When the result is taller than one tile, it is also saved as numbered,
+overlapping JPEG tiles in `~/Pictures/ShielyCapture/scroll-<timestamp>/`
+(`01-of-17.jpg`, ...). The clipboard still gets the full image. Defaults: 1470 px
+wide, 2500 px tall, 175 px overlap, quality 85. Override any of `height`, `overlap`,
+`max_width`, `quality` in `~/Library/Application Support/ShielyCapture/tiles.json`,
+for example `{"height": 1568}` for older models. Upload at most 20 tiles per message.
+
 ## Video capture
 
 Press Ctrl+Shift+5, click a window or drag an area, and it records the screen with no audio.

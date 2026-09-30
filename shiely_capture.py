@@ -53,6 +53,9 @@ VIDEO_DIR = os.path.expanduser("~/Movies/ShielyCapture")
 STATE_DIR = os.path.expanduser("~/Library/Application Support/ShielyCapture")
 REGION_FILE = os.path.join(STATE_DIR, "last_region.json")
 MIN_FRAME = 20
+TILE_DIR = os.path.expanduser("~/Pictures/ShielyCapture")
+TILE_SETTINGS_FILE = os.path.join(STATE_DIR, "tiles.json")
+TILE_DEFAULTS = {"height": 2500, "overlap": 175, "max_width": 1470, "quality": 85}
 EVEN_ODD = getattr(AppKit, "NSWindingRuleEvenOdd", 1)
 POLL_SECONDS = 0.10
 MAX_CANVAS_ROWS = 60000
@@ -83,6 +86,55 @@ def to_clipboard(im):
     pb.declareTypes_owner_([NSPasteboardTypePNG], None)
     pb.setData_forType_(b.getvalue(), NSPasteboardTypePNG)
     log(f"copied {im.width}x{im.height}")
+
+
+# --------------------------------------------------------------------- tiles
+
+def tile_settings(path=TILE_SETTINGS_FILE):
+    """Defaults, overridden by keys in tiles.json (use height 1568 for older models)."""
+    cfg = dict(TILE_DEFAULTS)
+    try:
+        with open(path) as f:
+            cfg.update({k: int(v) for k, v in json.load(f).items() if k in cfg})
+    except (OSError, ValueError, TypeError):
+        pass
+    return cfg
+
+
+def tile_image(im, height, overlap, max_width):
+    """Slice a tall image into full-width tiles that overlap by `overlap` px.
+
+    Downscales only if wider than max_width. Returns [] when the image already
+    fits in one tile, since a single image needs no slicing.
+    """
+    if im.width > max_width:
+        im = im.resize((max_width, round(im.height * max_width / im.width)), Image.LANCZOS)
+    if im.height <= height:
+        return []
+    step = max(height - overlap, 1)
+    tops = range(0, im.height - overlap, step)
+    return [im.crop((0, t, im.width, min(t + height, im.height))) for t in tops]
+
+
+def save_tiles(im, stamp=None, out_root=TILE_DIR, cfg=None):
+    """Write numbered JPEG tiles to out_root/<stamp>/. Returns the folder, or None."""
+    from PIL import ImageDraw
+    cfg = cfg or tile_settings()
+    tiles = tile_image(im.convert("RGB"), cfg["height"], cfg["overlap"], cfg["max_width"])
+    if not tiles:
+        return None
+    folder = os.path.join(out_root, stamp or time.strftime("scroll-%Y%m%d-%H%M%S"))
+    os.makedirs(folder, exist_ok=True)
+    n = len(tiles)
+    pad = len(str(n))
+    for i, t in enumerate(tiles, 1):
+        label = f"{i} of {n}"
+        d = ImageDraw.Draw(t)
+        d.rectangle((0, 0, 8 * len(label) + 12, 20), fill=(0, 0, 0))
+        d.text((6, 4), label, fill=(255, 255, 255))
+        t.save(os.path.join(folder, f"{str(i).zfill(pad)}-of-{n}.jpg"), quality=cfg["quality"])
+    log(f"saved {n} tiles to {folder}")
+    return folder
 
 
 # ------------------------------------------------------------ carbon hotkeys
@@ -1108,6 +1160,10 @@ class App(rumps.App):
             return
         try:
             to_clipboard(img)
+            try:
+                save_tiles(img)
+            except Exception:
+                traceback.print_exc()
             self.flash_until = time.time() + 2.5
             play("Pop")
         except Exception:
