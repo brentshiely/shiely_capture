@@ -28,6 +28,7 @@ cannot be tested, the stitching invariants).
 | Ctrl+Shift+2 | Full screen |
 | Ctrl+Shift+3 | Window |
 | Ctrl+Shift+4 | Scroll capture |
+| Ctrl+Shift+6 | Copy next tile of the last tiled scroll capture |
 | Ctrl+Shift+5 | Silent video of a window or area |
 
 ## Region capture
@@ -52,12 +53,18 @@ bar shows a recording dot with a frame count, then a check mark after a copy.
 ### Tiles for Claude
 
 Very tall stitched images get downscaled until text is unreadable when uploaded to
-Claude. When the result is taller than one tile, it is also saved as numbered,
+Claude. When the result is taller than one tile, it is saved as numbered,
 overlapping JPEG tiles in `~/Pictures/ShielyCapture/scroll-<timestamp>/`
-(`01-of-17.jpg`, ...). The clipboard still gets the full image. Defaults: 1470 px
-wide, 2500 px tall, 175 px overlap, quality 85. Override any of `height`, `overlap`,
-`max_width`, `quality` in `~/Library/Application Support/ShielyCapture/tiles.json`,
-for example `{"height": 1568}` for older models. Upload at most 20 tiles per message.
+(`01-of-17.jpg`, ...) and the clipboard holds all the tile files, so one paste
+attaches them all. If your app only takes one paste at a time, press Ctrl+Shift+6
+(menu: Next tile) to copy tile 1, paste, press it again for tile 2, and so on. The
+menu bar shows which tile you are on. A capture short enough for one image is
+copied whole, as before.
+
+Defaults: 1470 px wide, 2500 px tall, 175 px overlap, quality 85. Override any of
+`height`, `overlap`, `max_width`, `quality` in
+`~/Library/Application Support/ShielyCapture/tiles.json`, for example
+`{"height": 1568}` for older models. Upload at most 20 tiles per message.
 
 ## Video capture
 

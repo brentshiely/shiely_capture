@@ -44,7 +44,7 @@ from Quartz import (
     kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
 )
 
-KEY_1, KEY_2, KEY_3, KEY_4, KEY_5 = 18, 19, 20, 21, 23
+KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6 = 18, 19, 20, 21, 23, 22
 KEY_RETURN, KEY_ENTER, KEY_ESC = 36, 76, 53
 MOD_SHIFT, MOD_CONTROL = 512, 4096
 MOD_MENU_CTRL_SHIFT = (1 << 18) | (1 << 17)      # NSEventModifierFlagControl | NSEventModifierFlagShift
@@ -960,7 +960,7 @@ class VideoSession(threading.Thread):
 
 # ---------------------------------------------------------------- the app
 
-HK_REGION, HK_FULL, HK_WINDOW, HK_SCROLL, HK_VIDEO, HK_RET, HK_ESC, HK_ENTER = 1, 2, 3, 4, 5, 10, 11, 12
+HK_REGION, HK_FULL, HK_WINDOW, HK_SCROLL, HK_VIDEO, HK_TILE, HK_RET, HK_ESC, HK_ENTER = 1, 2, 3, 4, 5, 6, 10, 11, 12
 
 
 def _menu_item(title, key, callback):
@@ -980,6 +980,7 @@ class App(rumps.App):
             _menu_item("Window", "3", lambda _: self.window()),
             _menu_item("Scroll", "4", lambda _: self.scroll()),
             _menu_item("Video", "5", lambda _: self.video()),
+            _menu_item("Next tile", "6", lambda _: self.next_tile()),
             None,
             rumps.MenuItem("Quit", callback=rumps.quit_application),
         ]
@@ -988,9 +989,12 @@ class App(rumps.App):
         self.selector = None
         self.border = None
         self.flash_until = 0
+        self.flash_text = "✓"
+        self.tiles = []          # tile file paths from the last tiled scroll capture
+        self.tile_i = 0
         self.hotkeys = Hotkeys(self.on_hotkey)
         for hid, key in ((HK_REGION, KEY_1), (HK_FULL, KEY_2), (HK_WINDOW, KEY_3), (HK_SCROLL, KEY_4),
-                          (HK_VIDEO, KEY_5)):
+                          (HK_VIDEO, KEY_5), (HK_TILE, KEY_6)):
             self.hotkeys.register(hid, key, MOD_CONTROL | MOD_SHIFT)
         self.ticker = rumps.Timer(self._tick, 0.4)
         self.ticker.start()
@@ -1003,7 +1007,7 @@ class App(rumps.App):
         if self.session:
             self.title = self.session.title()
         elif time.time() < self.flash_until:
-            self.title = "✓"
+            self.title = self.flash_text
         elif self.selector:
             self.title = "⌗…"
         else:
@@ -1022,6 +1026,8 @@ class App(rumps.App):
             self.scroll()
         elif hid == HK_VIDEO:
             self.video()
+        elif hid == HK_TILE:
+            self.next_tile()
         elif hid in (HK_RET, HK_ENTER):
             self.finish_scroll(cancel=False)
         elif hid == HK_ESC:
@@ -1078,6 +1084,20 @@ class App(rumps.App):
 
     def video(self):
         self._begin("video")
+
+    # -- tiles: paste them one at a time, or all at once
+    def next_tile(self):
+        """Copy the next tile image to the clipboard; wraps around after the last."""
+        if not self.tiles:
+            play("Basso")
+            return
+        i = self.tile_i % len(self.tiles)
+        to_clipboard(Image.open(self.tiles[i]))
+        log(f"tile {i + 1} of {len(self.tiles)} copied")
+        self.tile_i = i + 1
+        self.flash_text = f"{i + 1}/{len(self.tiles)}"
+        self.flash_until = time.time() + 2.5
+        play("Pop")
 
     def _begin(self, mode):
         if self.session:
@@ -1159,11 +1179,24 @@ class App(rumps.App):
             play("Basso")
             return
         try:
-            to_clipboard(img)
+            self.flash_text = "✓"
+            self.tiles = []
+            folder = None
             try:
-                save_tiles(img)
+                folder = save_tiles(img)
             except Exception:
                 traceback.print_exc()
+            if folder:
+                # Too tall to send whole: the clipboard holds every tile as a file,
+                # so one paste attaches them all. Ctrl+Shift+6 pastes them one by one.
+                self.tiles = sorted(os.path.join(folder, f) for f in os.listdir(folder))
+                self.tile_i = 0
+                pb = NSPasteboard.generalPasteboard()
+                pb.clearContents()
+                pb.writeObjects_([NSURL.fileURLWithPath_(t) for t in self.tiles])
+                self.flash_text = f"{len(self.tiles)} tiles"
+            else:
+                to_clipboard(img)
             self.flash_until = time.time() + 2.5
             play("Pop")
         except Exception:
