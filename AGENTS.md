@@ -52,6 +52,14 @@ Ctrl+Shift+1 opens a remembered, adjustable frame (`FrameEditor`); Return captur
   as mismatches makes the true shift fall under the acceptance threshold.
 - Commit new rows only from above each frame's bottom margin. Window corners and Chrome's link
   status bubble live at the bottom edge and otherwise land mid-page.
+- Fixed overlays (composer boxes, floating buttons, sticky bars) are found by `fixed_pixels`: blocks
+  identical at the same screen position but not when aligned for the scroll. One frame pair is
+  ambiguous over flat areas, so `Stitcher._vote` intersects two baselines at different scroll
+  distances and votes across the session. Frames are spilled to a temp dir and composed in
+  `result()` with the final mask (early masks are too weak and first-write-wins would lock them in).
+  Pixels hidden under an overlay in every frame fall back to the raw canvas.
+- Matching skips static cells, not just static rows (`_match`), so partial-width overlays do not
+  count as mismatches. Keep 12 coarse candidates: the true shift can rank low at coarse scale.
 - A failed match leaves the previous frame in place, so scrolling back recovers. A wrong
   match corrupts the output, so prefer "no match" over a weak match (`MIN_MATCH_ROWS`, fraction >= 0.6).
 

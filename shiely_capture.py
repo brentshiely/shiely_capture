@@ -19,6 +19,7 @@ import ctypes
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -691,21 +692,26 @@ def _sigs(g):
 
 def _match(A, B, tol, tex_thr, skip=None):
     """Count textured rows of A that match B. Returns (matched, fraction, textured).
-    skip marks rows to ignore (static UI such as sticky headers)."""
+    skip marks cells to ignore (static UI such as sticky bars and fixed composers);
+    rows with fewer than 3 usable cells are ignored."""
     tex = A.std(axis=1) > tex_thr
-    if skip is not None:
-        tex &= ~skip
+    if skip is None:
+        d = np.abs(A - B).mean(axis=1)
+    else:
+        valid = ~skip
+        nv = valid.sum(axis=1)
+        tex &= nv >= 3
+        d = (np.abs(A - B) * valid).sum(axis=1) / np.maximum(nv, 1)
     n_tex = int(tex.sum())
     if n_tex == 0:
         return 0, 0.0, 0
-    d = np.abs(A - B).mean(axis=1)
     m = int(((d < tol) & tex).sum())
     return m, m / n_tex, n_tex
 
 
 def _static_rows(a, b):
-    """Rows identical at the same position in both frames: sticky bars, not content."""
-    return np.abs(a - b).mean(axis=1) < 1.0
+    """Cells identical at the same position in both frames: sticky bars, fixed overlays."""
+    return np.abs(a - b) < 1.0
 
 
 def _down_candidates(pc, cc, min_overlap, static):
@@ -717,7 +723,7 @@ def _down_candidates(pc, cc, min_overlap, static):
         if nt >= 6 and fr >= 0.5:
             out.append((m * fr ** 4, m, s))
     out.sort(reverse=True)
-    return [(m, s) for _, m, s in out[:5]]
+    return [(m, s) for _, m, s in out[:12]]
 
 
 def _refine_down(pf, cf, s_coarse, min_overlap_px, static):
@@ -750,18 +756,85 @@ def find_shift(prev_sig, cur_sig):
     return best[2], best[1]
 
 
+OVL_BLOCK = 8
+OVL_STILL = 2.5   # block mean |diff| at the same screen position: "did not move"
+OVL_MIN_GAP = 120  # extra scroll distance between the two baselines, px
+OVL_MOVED = 3.0   # block mean |diff| after aligning for the scroll: "is not page content"
+
+
+def _blocks(d, thr, below):
+    """Per-block threshold of a diff image, expanded back to pixel rows/cols."""
+    h, w = d.shape[0] // OVL_BLOCK, d.shape[1] // OVL_BLOCK
+    if h == 0 or w == 0:
+        return np.zeros(d.shape, bool)
+    m = d[:h * OVL_BLOCK, :w * OVL_BLOCK].reshape(h, OVL_BLOCK, w, OVL_BLOCK).mean(axis=(1, 3))
+    m = (m < thr) if below else (m > thr)
+    px = np.repeat(np.repeat(m, OVL_BLOCK, 0), OVL_BLOCK, 1)
+    out = np.zeros(d.shape, bool)
+    out[:px.shape[0], :px.shape[1]] = px
+    return out
+
+
+def fixed_pixels(prev_g, cur_g, s):
+    """Pixels that stay put on screen while the page scrolls by s (cur[r] ~ prev[r + s]):
+    fixed composers, floating buttons, sticky bars. Fixed elements share screen
+    coordinates in both frames, so one pair gives one mask, and testing in both
+    directions covers the top and the bottom of the viewport. One pair is ambiguous over
+    flat areas (the mismatch may belong to either frame), so callers intersect two
+    pairs with different scroll distances."""
+    H, W = cur_g.shape
+    x, y, k = (prev_g, cur_g, s) if s > 0 else (cur_g, prev_g, -s)  # x[r + k] ~ y[r]
+    x = x.astype(np.int16)
+    y = y.astype(np.int16)
+    still = _blocks(np.abs(x - y), OVL_STILL, True)
+    n = H - k
+    m = np.zeros((H, W), bool)
+    tested = np.zeros(H, bool)       # rows this pair could judge at all
+    if n >= OVL_BLOCK:
+        tested[:n] = True
+        tested[k:] = True
+        mv = _blocks(np.abs(y[:n] - x[k:]), OVL_MOVED, False)
+        m[:n] |= still[:n] & mv            # y[r] is the fixed one
+        m[k:k + n] |= still[k:k + n] & mv  # or x[r + k] is (bottom of the viewport)
+    r = OVL_BLOCK                 # grow a block so borders and shadows go with the element
+    g = m.copy()
+    g[r:] |= m[:-r]
+    g[:-r] |= m[r:]
+    h = g.copy()
+    h[:, r:] |= g[:, :-r]
+    h[:, :-r] |= g[:, r:]
+    return h, tested
+
+
 class Stitcher:
     """Incrementally builds a tall image from overlapping frames (RGB arrays).
+
+    Fixed overlays (composer boxes, floating buttons, sticky bars) are found per frame
+    pair and kept out of the clean canvas, which fills those spots from other frames
+    where the content is uncovered. A second canvas keeps every pixel as written, so
+    rows that are covered in every frame (page top under a sticky bar, page bottom
+    under a composer) still come out.
 
     Rows are committed only from above each frame's bottom margin, so window
     corners and Chrome's link-status bubble at the bottom edge never land
     mid-page. The last frame supplies whatever is left at the end."""
 
     def __init__(self):
-        self.strips = []
+        self.clean = None     # canvas without overlays
+        self.valid = None     # bool per canvas pixel: clean written
+        self.raw = None       # canvas with everything
+        self.have = None      # bool per canvas row: raw written
+        self.rows = 0         # allocated canvas rows
         self.total = 0        # canvas rows committed so far
         self.pos = 0          # canvas row of the top of the last accepted frame
-        self.prev = None      # (rgb, sig)
+        self.prev = None      # (rgb, sig, gray)
+        self.hist = []        # recent (gray, pos) of accepted frames
+        self.frames = []      # (npy path, canvas pos, rows to commit): composed in result()
+        self.tmp = None
+        self.votes = None     # int16 H x W: tests that flagged the pixel as fixed
+        self.tests = None     # int16 H x W: tests that could judge the pixel
+        self.trials = 0
+        self.overlay = None   # bool H x W, frame coordinates (None until trusted)
         self.frames_seen = 0
         self.frames_used = 0
 
@@ -773,22 +846,102 @@ class Stitcher:
     def _margin(H):
         return max(60, int(H * 0.06))
 
+    def _ensure(self, rows, shape):
+        if self.clean is None:
+            self.rows = max(rows, shape[0] * 4)
+            self.clean = np.zeros((self.rows,) + shape[1:], np.uint8)
+            self.raw = np.zeros_like(self.clean)
+            self.valid = np.zeros(self.clean.shape[:2], bool)
+            self.have = np.zeros(self.rows, bool)
+        elif rows > self.rows:
+            new = max(rows, self.rows * 2)
+            pad = new - self.rows
+
+            def grow(a):
+                return np.concatenate([a, np.zeros((pad,) + a.shape[1:], a.dtype)])
+            self.clean, self.raw, self.valid, self.have = (
+                grow(self.clean), grow(self.raw), grow(self.valid), grow(self.have))
+            self.rows = new
+
+    def _commit(self, rgb, pos, end):
+        """Write frame rows [0, end) at canvas row pos + r, first write wins."""
+        end = min(end, rgb.shape[0])
+        if end <= 0:
+            return
+        self._ensure(pos + end, rgb.shape)
+        sl = slice(pos, pos + end)
+        src = rgb[:end]
+        fresh = ~self.have[sl]
+        self.raw[sl][fresh] = src[fresh]
+        self.have[sl] = True
+        ok = ~self.valid[sl]
+        if self.overlay is not None:
+            ok &= ~self.overlay[:end]
+        self.clean[sl][ok] = src[ok]
+        self.valid[sl] |= ok
+        self.total = max(self.total, pos + end)
+
+    def _fill(self, rgb, pos, lo):
+        """Fill still-empty clean pixels from rows [lo, H) of a frame, never from overlays."""
+        hi = min(rgb.shape[0], self.total - pos)
+        if hi <= lo:
+            return
+        sl = slice(pos + lo, pos + hi)
+        ok = ~self.valid[sl] & ~self.overlay[lo:hi]
+        self.clean[sl][ok] = rgb[lo:hi][ok]
+        self.valid[sl] |= ok
+
+    def _spill(self, rgb, pos, end):
+        if self.tmp is None:
+            self.tmp = tempfile.mkdtemp(prefix="shiely_st_")
+        path = os.path.join(self.tmp, f"{len(self.frames)}.npy")
+        np.save(path, rgb)
+        self.frames.append((path, pos, end))
+
+    def close(self):
+        if self.tmp:
+            shutil.rmtree(self.tmp, ignore_errors=True)
+            self.tmp = None
+        self.frames = []
+
+    def _vote(self, gray, newpos, s):
+        """Test cur against the previous frame and against an older one at a clearly
+        different scroll distance; pixels fixed in both get a vote."""
+        H = gray.shape[0]
+        pg = self.prev[2]
+        old = None
+        for hg, hpos in self.hist:               # oldest first: take the nearest far enough
+            if abs(newpos - hpos) >= abs(s) + max(OVL_MIN_GAP, int(H * 0.2)) and abs(newpos - hpos) < H * 0.9:
+                old = (hg, hpos)
+        if old is None:
+            return
+        f1, t1 = fixed_pixels(pg, gray, s)
+        f2, t2 = fixed_pixels(old[0], gray, newpos - old[1])
+        both = f1 & f2
+        tested = np.repeat((t1 & t2)[:, None], gray.shape[1], axis=1)
+        if self.votes is None:
+            self.votes = np.zeros(gray.shape, np.int16)
+            self.tests = np.zeros(gray.shape, np.int16)
+        self.votes += both
+        self.tests += tested
+        self.trials += 1
+
     def add(self, rgb):
         self.frames_seen += 1
         H = rgb.shape[0]
         if self.prev is None:
-            keep = H - self._margin(H)
-            self.strips.append(rgb[:keep])
-            self.total = keep
-            self.prev = (rgb, _sigs(self._gray(rgb)))
+            g = self._gray(rgb)
+            self.prev = (rgb, _sigs(g), g)
+            self.hist = [(g, 0)]
             self.frames_used = 1
             return "first"
-        prgb, psig = self.prev
+        prgb, psig, pgray = self.prev
         if rgb.shape != prgb.shape:
             return "size-changed"
         if np.array_equal(rgb[::3, ::3], prgb[::3, ::3]):
             return "same"
-        sig = _sigs(self._gray(rgb))
+        gray = self._gray(rgb)
+        sig = _sigs(gray)
         r = find_shift(psig, sig)
         if r is None:
             return "no-match"
@@ -796,29 +949,35 @@ class Stitcher:
         newpos = self.pos + s
         if newpos < 0:
             return "above-start"
-        limit = newpos + H - self._margin(H)
-        if limit > MAX_CANVAS_ROWS:
+        if newpos + H - self._margin(H) > MAX_CANVAS_ROWS:
             return "too-tall"
-        if self.total < newpos:  # jumped past the margin: previous frame covers the gap
-            self.strips.append(prgb[self.total - self.pos:newpos - self.pos])
-            self.total = newpos
-        if limit > self.total:
-            self.strips.append(rgb[self.total - newpos:limit - newpos])
-            self.total = limit
+        self._vote(gray, newpos, s)
+        # the previous frame contributes up to its margin; if the scroll jumped past
+        # that, it also covers the gap
+        self._spill(prgb, self.pos, max(H - self._margin(H), min(newpos - self.pos, H)))
         self.pos = newpos
-        self.prev = (rgb, sig)
+        self.prev = (rgb, sig, gray)
+        self.hist.append((gray, newpos))
+        self.hist = [h for h in self.hist if abs(newpos - h[1]) < H * 0.9]
         self.frames_used += 1
         return f"shift {s}"
 
     def result(self):
-        if not self.strips:
+        if self.prev is None:
             return None
         last = self.prev[0]
-        tail = last[self.total - self.pos:]
-        parts = self.strips + ([tail] if tail.shape[0] else [])
-        if len(parts) == 1:
-            return Image.fromarray(parts[0])
-        return Image.fromarray(np.concatenate(parts, axis=0))
+        if self.trials >= 2:  # composed only now so that early frames see the final mask
+            self.overlay = (self.votes >= 2) & (self.votes >= 0.45 * self.tests)
+        for path, pos, end in self.frames:
+            self._commit(np.load(path), pos, end)
+        self._commit(last, self.pos, last.shape[0])
+        if self.overlay is not None:  # holes left under overlays: try the margin rows too
+            for path, pos, end in self.frames:
+                self._fill(np.load(path), pos, end)
+        self.close()
+        n = self.total
+        out = np.where(self.valid[:n, :, None], self.clean[:n], self.raw[:n])
+        return Image.fromarray(out)
 
 
 # ---------------------------------------------------------- scroll session
@@ -891,6 +1050,7 @@ class ScrollSession(threading.Thread):
             self.cancelled = True
         finally:
             img = None if self.cancelled else self.stitcher.result()
+            self.stitcher.close()
             try:
                 for f in os.listdir(self.tmpdir):
                     os.unlink(os.path.join(self.tmpdir, f))
