@@ -68,7 +68,7 @@ Defaults: 1470 px wide, 2500 px tall, 175 px overlap, quality 85. Override any o
 
 ## Video capture
 
-Press Ctrl+Shift+5, click a window or drag an area, and it records the screen with no audio.
+Press Ctrl+Shift+5, click a window or drag an area, and it records the screen with microphone audio. App and system audio are not captured.
 Press Ctrl+Shift+5 again or Return to stop, or Esc to discard. The `.mov` is saved to
 `~/Movies/ShielyCapture/` and the file is also placed on the clipboard, so you can paste it
 into Slack, Mail or Messages. It records that rectangle of the screen, so a window that
