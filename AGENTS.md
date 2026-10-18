@@ -8,7 +8,7 @@ Read this first if you are an AI engineer asked to review, run, debug or extend 
 ShielyCapture is a single-file macOS menu bar app (`shiely_capture.py`, Python + PyObjC + rumps).
 Global hotkeys take screenshots to the clipboard. Ctrl+Shift+4 is a Snagit-style scrolling
 capture: the user selects a window or area, scrolls normally, and Return stitches the frames.
-Ctrl+Shift+5 records silent video of a window or area with `screencapture -v -R`.
+Ctrl+Shift+5 records video with microphone audio (default input) of a window or area with `screencapture -v -g -R`. App/system audio needs ScreenCaptureKit.
 Ctrl+Shift+1 opens a remembered, adjustable frame (`FrameEditor`); Return captures it with `screencapture -R`.
 
 ## Layout

@@ -1063,7 +1063,8 @@ class ScrollSession(threading.Thread):
 # ---------------------------------------------------------- video session
 
 class VideoSession(threading.Thread):
-    """Silent screen video of a rectangle, using the built-in screencapture -v.
+    """Screen video of a rectangle with microphone audio (-g), using the built-in screencapture -v.
+    App/system audio is not captured; that needs ScreenCaptureKit.
     Stops when stop_flag is set (SIGINT makes screencapture finalize the file)."""
 
     def __init__(self, rect, on_done):
@@ -1087,7 +1088,7 @@ class VideoSession(threading.Thread):
         path = None
         try:
             self.proc = subprocess.Popen(
-                ["screencapture", "-v", "-x", "-R", f"{x},{y},{w},{h}", self.path],
+                ["screencapture", "-v", "-g", "-x", "-R", f"{x},{y},{w},{h}", self.path],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             while not self.stop_flag.is_set():
                 if self.proc.poll() is not None:      # died on its own: permission, bad flags

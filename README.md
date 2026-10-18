@@ -29,7 +29,7 @@ cannot be tested, the stitching invariants).
 | Ctrl+Shift+3 | Window |
 | Ctrl+Shift+4 | Scroll capture |
 | Ctrl+Shift+6 | Copy next tile of the last tiled scroll capture |
-| Ctrl+Shift+5 | Silent video of a window or area |
+| Ctrl+Shift+5 | Video of a window or area, with microphone audio |
 
 ## Region capture
 
